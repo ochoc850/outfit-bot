@@ -1,172 +1,133 @@
 #!/usr/bin/env python3
 """
-Mastodon Daily Outfit Inspiration Bot
-Fetches fashion images from public domain sources and posts daily to Mastodon
+Simple Mastodon Outfit Bot - Minimal Dependencies
 """
 
 import os
 import json
-import random
-import logging
-from datetime import datetime
+import requests
 from pathlib import Path
-from dotenv import load_dotenv
-from mastodon import Mastodon
-from image_sources import fetch_from_unsplash, fetch_from_pexels, fetch_from_open_images
 
-# Setup logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('outfit_bot.log'),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger(__name__)
-
-# Load environment variables
-load_dotenv()
-
+# Get secrets from environment
 MASTODON_URL = os.getenv('MASTODON_INSTANCE_URL')
 MASTODON_TOKEN = os.getenv('MASTODON_ACCESS_TOKEN')
 UNSPLASH_KEY = os.getenv('UNSPLASH_ACCESS_KEY')
-PEXELS_KEY = os.getenv('PEXELS_API_KEY')
 
-# Create directories
-IMAGE_CACHE_DIR = Path('outfit_cache')
-IMAGE_CACHE_DIR.mkdir(exist_ok=True)
+print(f"Starting bot...")
+print(f"Mastodon URL: {MASTODON_URL}")
+print(f"Token exists: {bool(MASTODON_TOKEN)}")
+print(f"Unsplash key exists: {bool(UNSPLASH_KEY)}")
 
+# Check if secrets are set
+if not MASTODON_URL or not MASTODON_TOKEN or not UNSPLASH_KEY:
+    print("ERROR: Missing required secrets!")
+    print(f"  MASTODON_INSTANCE_URL: {MASTODON_URL}")
+    print(f"  MASTODON_ACCESS_TOKEN: {'SET' if MASTODON_TOKEN else 'NOT SET'}")
+    print(f"  UNSPLASH_ACCESS_KEY: {'SET' if UNSPLASH_KEY else 'NOT SET'}")
+    exit(1)
 
-def get_random_outfit_inspo():
-    """
-    Fetch a random outfit inspiration from available sources
-    Returns: dict with 'image_path', 'description', 'attribution'
-    """
-    sources = []
+# Fetch image from Unsplash
+print("\\nFetching image from Unsplash...")
+try:
+    response = requests.get(
+        "https://api.unsplash.com/search/photos",
+        params={
+            "query": "fashion outfit clothing",
+            "per_page": 1,
+            "order_by": "random"
+        },
+        headers={"Authorization": f"Client-ID {UNSPLASH_KEY}"},
+        timeout=10
+    )
+    response.raise_for_status()
+    data = response.json()
     
-    # Try each source
-    if UNSPLASH_KEY:
-        try:
-            logger.info("Attempting to fetch from Unsplash...")
-            photo = fetch_from_unsplash(UNSPLASH_KEY, IMAGE_CACHE_DIR)
-            if photo:
-                sources.append(photo)
-                logger.info(f"✓ Got image from Unsplash: {photo['filepath']}")
-        except Exception as e:
-            logger.warning(f"Unsplash fetch failed: {e}")
+    if not data.get('results'):
+        print("ERROR: No images found from Unsplash")
+        exit(1)
     
-    if PEXELS_KEY:
-        try:
-            logger.info("Attempting to fetch from Pexels...")
-            photo = fetch_from_pexels(PEXELS_KEY, IMAGE_CACHE_DIR)
-            if photo:
-                sources.append(photo)
-                logger.info(f"✓ Got image from Pexels: {photo['filepath']}")
-        except Exception as e:
-            logger.warning(f"Pexels fetch failed: {e}")
+    photo = data['results'][0]
+    image_url = photo['urls']['regular']
+    description = photo.get('description') or photo.get('alt_description', 'Cute outfit inspo')
+    photographer = photo['user']['name']
     
-    try:
-        logger.info("Attempting to fetch from Open Images...")
-        photo = fetch_from_open_images(IMAGE_CACHE_DIR)
-        if photo:
-            sources.append(photo)
-            logger.info(f"✓ Got image from Open Images: {photo['filepath']}")
-    except Exception as e:
-        logger.warning(f"Open Images fetch failed: {e}")
+    print(f"✓ Got image: {description}")
+    print(f"✓ Photographer: {photographer}")
     
-    if not sources:
-        raise Exception("No image sources available! Check API keys and internet connection.")
+    # Download the image
+    img_response = requests.get(image_url, timeout=10)
+    img_response.raise_for_status()
     
-    # Pick random source
-    chosen = random.choice(sources)
-    logger.info(f"Selected outfit from: {chosen['source']}")
-    return chosen
+    # Save image temporarily
+    image_path = Path('temp_outfit.jpg')
+    image_path.write_bytes(img_response.content)
+    print(f"✓ Image saved: {image_path}")
+    
+except Exception as e:
+    print(f"ERROR fetching from Unsplash: {e}")
+    exit(1)
 
-
-def post_to_mastodon(image_path, description, attribution):
-    """
-    Upload image and post to Mastodon instance
-    """
-    try:
-        mastodon = Mastodon(
-            access_token=MASTODON_TOKEN,
-            api_base_url=MASTODON_URL
+# Upload to Mastodon
+print("\\nUploading to Mastodon...")
+try:
+    # Upload media
+    with open(image_path, 'rb') as f:
+        files = {'file': f}
+        media_response = requests.post(
+            f"{MASTODON_URL}/api/v1/media",
+            headers={"Authorization": f"Bearer {MASTODON_TOKEN}"},
+            files=files
         )
-        
-        # Upload media
-        logger.info(f"Uploading image: {image_path}")
-        media = mastodon.media_post(
-            image_path,
-            mime_type='image/jpeg',
-            description=f"Fashion outfit inspiration: {description}"
-        )
-        
-        # Create caption
-        caption = f"✨ Today's outfit inspo ✨\n\n{description}\n\n{attribution}\n\n#FashionInspo #OOTD #DailyStyle"
-        
-        # Post status
-        logger.info("Posting to Mastodon...")
-        status = mastodon.status_post(
-            caption,
-            media_ids=[media['id']]
-        )
-        
-        logger.info(f"✓ Posted successfully! Status ID: {status['id']}")
-        return True
-        
-    except Exception as e:
-        logger.error(f"Failed to post to Mastodon: {e}")
-        raise
-
-
-def cleanup_old_images(days=7):
-    """Remove cached images older than N days"""
-    try:
-        import time
-        cutoff = time.time() - (days * 86400)
-        removed = 0
-        
-        for img in IMAGE_CACHE_DIR.glob('*.jpg'):
-            if os.path.getmtime(img) < cutoff:
-                os.remove(img)
-                removed += 1
-        
-        if removed:
-            logger.info(f"Cleaned up {removed} old cached images")
-    except Exception as e:
-        logger.warning(f"Cleanup failed: {e}")
-
-
-def main():
-    """Main bot function - fetch outfit and post"""
-    logger.info("=" * 60)
-    logger.info("Starting Daily Outfit Bot")
-    logger.info(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    logger.info("=" * 60)
     
-    try:
-        # Fetch outfit inspiration
-        outfit = get_random_outfit_inspo()
-        
-        # Post to Mastodon
-        post_to_mastodon(
-            outfit['filepath'],
-            outfit['description'],
-            outfit['attribution']
-        )
-        
-        # Cleanup old cache
-        cleanup_old_images(days=7)
-        
-        logger.info("✓ Bot completed successfully!")
-        return True
-        
-    except Exception as e:
-        logger.error(f"✗ Bot failed: {e}", exc_info=True)
-        return False
+    media_response.raise_for_status()
+    media_data = media_response.json()
+    media_id = media_data['id']
+    print(f"✓ Media uploaded: {media_id}")
+    
+    # Create post
+    caption = f"✨ Today's outfit inspo ✨\\n\\n{description}\\n\\n📸 Photo by {photographer}\\n\\n#FashionInspo #OOTD #DailyStyle"
+    
+    status_response = requests.post(
+        f"{MASTODON_URL}/api/v1/statuses",
+        headers={"Authorization": f"Bearer {MASTODON_TOKEN}"},
+        json={
+            "status": caption,
+            "media_ids": [media_id],
+            "visibility": "public"
+        }
+    )
+    
+    status_response.raise_for_status()
+    status = status_response.json()
+    print(f"✓ Posted! Status ID: {status['id']}")
+    print(f"✓ URL: {status['url']}")
+    
+except Exception as e:
+    print(f"ERROR posting to Mastodon: {e}")
+    if 'media_response' in locals():
+        print(f"Media response: {media_response.text}")
+    if 'status_response' in locals():
+        print(f"Status response: {status_response.text}")
+    exit(1)
 
+# Cleanup
+try:
+    image_path.unlink()
+    print("\\n✓ Cleanup complete")
+except:
+    pass
 
-if __name__ == '__main__':
-    success = main()
-    exit(0 if success else 1)
+print("\\n🎉 Bot completed successfully!")
+```
+
+**4. Click Commit changes**
+
+---
+
+## 5. Update requirements.txt
+
+**Go to:** https://github.com/ochoc850/outfit-bot/blob/main/requirements.txt
+
+**Click ✏️ edit and replace with:**
+```
+requests==2.31.0
