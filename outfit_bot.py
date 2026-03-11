@@ -5,6 +5,7 @@ Simple Mastodon Outfit Bot
 
 import os
 import requests
+import random
 from pathlib import Path
 
 # Get secrets
@@ -16,12 +17,34 @@ if not all([MASTODON_URL, MASTODON_TOKEN, UNSPLASH_KEY]):
     print("ERROR: Missing required environment variables")
     exit(1)
 
+# Fashion search terms for variety
+fashion_queries = [
+    "fashion outfit",
+    "casual style",
+    "clothing aesthetic",
+    "street style fashion",
+    "outfit of the day",
+    "women fashion",
+    "style inspiration",
+    "daily look",
+    "fashion inspiration",
+    "trendy outfit",
+    "summer fashion",
+    "spring outfit",
+    "elegant style",
+    "casual clothing",
+    "fashion look"
+]
+
 # Fetch image from Unsplash
 try:
+    # Pick random search term for variety
+    query = random.choice(fashion_queries)
+    
     response = requests.get(
         "https://api.unsplash.com/search/photos",
         params={
-            "query": "fashion outfit clothing",
+            "query": query,
             "per_page": 1,
             "order_by": "random"
         },
